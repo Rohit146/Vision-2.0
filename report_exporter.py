@@ -11,3 +11,4 @@ def export_pdf(content):
     story += [Paragraph(line, styles['Normal']) for line in content.split("\n")]
     doc.build(story)
     return tmp.name
+
