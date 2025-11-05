@@ -5,8 +5,8 @@ def load_excel(file):
 
 def summarize_dataframe(df: pd.DataFrame):
     return {
-        "rows": int(df.shape[0]),
-        "cols": int(df.shape[1]),
+        "rows": df.shape[0],
+        "cols": df.shape[1],
         "numeric": df.select_dtypes(include=["number"]).columns.tolist(),
         "categorical": df.select_dtypes(exclude=["number"]).columns.tolist()
     }
