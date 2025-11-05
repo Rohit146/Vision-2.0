@@ -1,8 +1,10 @@
-# 💼 AI Business Mockup Chatbot
+# AI BI Mockup Builder (Power BI / MicroStrategy)
 
-Upload Excel data → Ask questions → Get AI-generated business mockups, dashboards, and PDF reports.
+- Upload Excel → Generate **compact JSON spec** → Edit → **Auto dashboard** (KPIs, slicers, charts) → Export spec & data.
+- Built for low token use (no long narratives).
 
-## 🚀 Deploy on Streamlit Cloud
-1. Push this folder to a GitHub repo.
-2. Go to [streamlit.io/cloud](https://streamlit.io/cloud) → "Deploy an app" → select your repo.
-3. Under **App Settings → Secrets**, add:
+## Run
+```bash
+pip install -r requirements.txt
+export OPENAI_API_KEY=sk-...
+streamlit run app.py
