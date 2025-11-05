@@ -1,215 +1,95 @@
 import streamlit as st
-import plotly.express as px
 import pandas as pd
-import json, re
+from io import StringIO
+from data_handler import load_excel, generate_data_profile
+from mockup_generator import generate_bi_mockup
+from visualizer import render_pages
 
-# ---------- parsing / validation ----------
-def try_parse_json(text: str):
-    try:
-        match = re.search(r"\{[\s\S]*\}\s*$", text.strip())
-        if not match:
-            return None, "No JSON object found."
-        return json.loads(match.group(0)), None
-    except Exception as e:
-        return None, f"JSON parse error: {e}"
+# ---------------- APP CONFIG ----------------
+st.set_page_config(page_title="AI BI Mockup Builder", layout="wide")
+st.title("📊 AI BI Mockup Builder (Power BI / MicroStrategy)")
 
-def list_missing_fields(spec_page: dict, df: pd.DataFrame):
-    missing = set()
-    cols = set(df.columns)
-    # KPIs
-    for k in spec_page.get("KPIs", []):
-        f = k.get("field")
-        if f and f not in cols:
-            missing.add(f)
-    # Filters
-    for flt in spec_page.get("Filters", []):
-        f = flt.get("field")
-        if f and f not in cols:
-            missing.add(f)
-    # Charts
-    for sec in spec_page.get("Layout", []):
-        for el in sec.get("elements", []):
-            for key in ("x","y","color"):
-                f = el.get(key)
-                if f and f not in cols:
-                    missing.add(f)
-            for f in el.get("columns", []) or []:
-                if f not in cols: missing.add(f)
-            for f in el.get("groupby", []) or []:
-                if f not in cols: missing.add(f)
-            for m in el.get("metrics", []) or []:
-                f = m.get("field")
-                if f and f not in cols:
-                    missing.add(f)
-    return sorted(list(missing))
+# Initialize session
+if "mockup_spec" not in st.session_state:
+    st.session_state["mockup_spec"] = ""
+if "data_profile" not in st.session_state:
+    st.session_state["data_profile"] = None
+if "df_by_sheet" not in st.session_state:
+    st.session_state["df_by_sheet"] = None
 
-def apply_mapping_to_spec(spec_page: dict, mapping: dict):
-    js = json.dumps(spec_page)
-    for k,v in mapping.items():
-        if v:  # only replace if user mapped something
-            js = re.sub(rf'("{re.escape(k)}")', f'"{v}"', js)
-    return json.loads(js)
+# ---------------- SIDEBAR ----------------
+st.sidebar.header("📂 Data")
+uploaded = st.sidebar.file_uploader("Upload Excel file", type=["xlsx", "xls"])
 
-# ---------- filters ----------
-def apply_slicers(df: pd.DataFrame, spec_page: dict):
-    filter_fields = [f.get("field") for f in spec_page.get("Filters", []) if f.get("field") in df.columns]
-    selected = {}
-    with st.sidebar:
-        if filter_fields:
-            st.markdown("### 🔎 Filters")
-        for f in filter_fields:
-            vals = sorted(df[f].dropna().unique().tolist())
-            pick = st.multiselect(f, vals, default=vals[:min(5,len(vals))])
-            if pick:
-                selected[f] = set(pick)
-    if selected:
-        mask = pd.Series([True]*len(df))
-        for col, allowed in selected.items():
-            mask &= df[col].isin(list(allowed))
-        df = df[mask]
-    return df
+if uploaded:
+    st.session_state["df_by_sheet"] = load_excel(uploaded)
+    st.session_state["data_profile"] = generate_data_profile(st.session_state["df_by_sheet"])
+    st.sidebar.success(f"Loaded {len(st.session_state['df_by_sheet'])} sheet(s).")
 
-# ---------- KPIs ----------
-def compute_agg(series: pd.Series, agg: str):
-    agg = (agg or "sum").lower()
-    if agg == "sum":   return series.sum()
-    if agg == "avg":   return series.mean()
-    if agg == "min":   return series.min()
-    if agg == "max":   return series.max()
-    if agg == "count": return series.count()
-    if agg == "distinct": return series.nunique()
-    return series.sum()
+# Controls
+st.sidebar.header("⚙️ Session Controls")
+if st.sidebar.button("🧹 Reset Session"):
+    st.session_state.clear()
+    st.experimental_rerun()
 
-def fmt(val, fmt_str):
-    try:
-        if fmt_str and fmt_str not in ("auto", ""):
-            # naive formatter; for currencies use as-is
-            return f"{val:,.2f}" if "0.00" in fmt_str else f"{val:,.0f}"
-        if isinstance(val, float):
-            return f"{val:,.2f}"
-        return f"{val:,}"
-    except Exception:
-        return str(val)
+if st.sidebar.button("🗂 Duplicate Spec"):
+    st.session_state["mockup_spec"] = st.session_state["mockup_spec"]
 
-def render_kpis(df: pd.DataFrame, spec_page: dict):
-    kpis = spec_page.get("KPIs", []) or []
-    if not kpis: return
-    st.markdown("### 📌 KPIs")
-    cols = st.columns(max(1, min(4, len(kpis))))
-    for i,k in enumerate(kpis):
-        title = k.get("title","KPI")
-        field = k.get("field")
-        agg = k.get("agg","sum")
-        fmt_str = k.get("format","auto")
-        if field in df.columns and pd.api.types.is_numeric_dtype(df[field]):
-            val = compute_agg(df[field], agg)
-            cols[i % len(cols)].metric(label=title, value=fmt(val, fmt_str))
-        else:
-            cols[i % len(cols)].metric(label=title, value="N/A")
+# ---------------- MAIN TABS ----------------
+tab_data, tab_design, tab_preview = st.tabs(["📊 Data", "🧩 Design", "▶️ Preview Dashboard"])
 
-# ---------- charts ----------
-def render_chart(df: pd.DataFrame, el: dict):
-    ctype = (el.get("type") or "").lower()
-    if ctype == "table":
-        cols = el.get("columns") or list(df.columns)[:8]
-        if any(c not in df.columns for c in cols):
-            return
-        view = df[cols]
-        # groupby + metrics
-        if el.get("groupby") and el.get("metrics"):
-            gcols = [g for g in el["groupby"] if g in view.columns]
-            if gcols:
-                agg_map = {}
-                for m in el["metrics"]:
-                    f = m.get("field")
-                    a = (m.get("agg") or "sum").lower()
-                    if f in view.columns:
-                        agg_map[f] = a
-                if agg_map:
-                    view = view.groupby(gcols, dropna=False).agg(agg_map).reset_index()
-        st.dataframe(view, use_container_width=True, hide_index=True)
-        return
-
-    x, y, color = el.get("x"), el.get("y"), el.get("color")
-    agg = (el.get("agg") or "sum").lower()
-
-    if not x or not y or x not in df.columns or y not in df.columns:
-        return
-
-    # aggregate if needed
-    if pd.api.types.is_numeric_dtype(df[y]):
-        gcols = [x] + ([color] if color and color in df.columns else [])
-        grouped = df.groupby(gcols, dropna=False)[y]
-        if   agg == "avg": data = grouped.mean().reset_index()
-        elif agg == "min": data = grouped.min().reset_index()
-        elif agg == "max": data = grouped.max().reset_index()
-        elif agg == "count": data = grouped.count().reset_index(name=y)
-        elif agg == "distinct": data = df.groupby(gcols, dropna=False)[y].nunique().reset_index(name=y)
-        else: data = grouped.sum().reset_index()
+# ---------------- TAB 1: DATA ----------------
+with tab_data:
+    st.subheader("📊 Uploaded Data Preview")
+    if st.session_state["df_by_sheet"]:
+        sheet = st.selectbox("Select Sheet", list(st.session_state["df_by_sheet"].keys()))
+        st.dataframe(st.session_state["df_by_sheet"][sheet].head(100), use_container_width=True)
     else:
-        data = df
+        st.info("Upload an Excel file to begin.")
 
-    title = f"{(el.get('y') or '').title()} by {(el.get('x') or '').title()}"
+# ---------------- TAB 2: DESIGN ----------------
+with tab_design:
+    st.subheader("🧠 BI Mockup Designer")
 
-    if ctype == "bar":
-        fig = px.bar(data, x=x, y=y, color=color, title=title)
-    elif ctype == "line":
-        fig = px.line(data, x=x, y=y, color=color, title=title, markers=True)
-    elif ctype == "area":
-        fig = px.area(data, x=x, y=y, color=color, title=title)
-    elif ctype == "pie":
-        fig = px.pie(data, names=x, values=y, color=color, title=title)
-    elif ctype == "scatter":
-        fig = px.scatter(data, x=x, y=y, color=color, title=title)
-    elif ctype == "histogram":
-        fig = px.histogram(data, x=x, y=y, color=color, title=title, barmode="overlay")
-    elif ctype == "box":
-        fig = px.box(data, x=x, y=y, color=color, title=title)
+    goal = st.text_input("Objective", placeholder="e.g., Create quarterly sales dashboard with KPIs and charts.")
+    role = st.selectbox("Role", ["BI Developer", "Data Analyst", "Finance Planner"], index=0)
+
+    colA, colB = st.columns([1, 1])
+    with colA:
+        if st.button("✨ Generate New Spec", disabled=not (goal and st.session_state["data_profile"])):
+            with st.spinner("Generating compact JSON spec..."):
+                spec = generate_bi_mockup(goal, st.session_state["data_profile"], role)
+                st.session_state["mockup_spec"] = spec
+    with colB:
+        if st.button("♻️ Refresh Preview"):
+            st.toast("Spec refreshed!", icon="🔄")
+
+    # Editable text area (autosave)
+    st.text_area(
+        "Mockup Spec (editable JSON)",
+        value=st.session_state.get("mockup_spec", ""),
+        height=400,
+        key="mockup_spec_editor",
+        on_change=lambda: st.session_state.update({"mockup_spec": st.session_state.mockup_spec_editor})
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            "⬇️ Download Spec JSON",
+            st.session_state.get("mockup_spec", ""),
+            file_name="mockup_spec.json"
+        )
+    with col2:
+        st.success("💾 Changes saved automatically to memory.")
+
+# ---------------- TAB 3: PREVIEW ----------------
+with tab_preview:
+    st.subheader("📈 Auto-Generated Dashboard")
+
+    if not st.session_state["df_by_sheet"]:
+        st.info("Upload an Excel file to visualize the dashboard.")
+    elif not st.session_state.get("mockup_spec"):
+        st.info("Generate or edit a mockup spec first.")
     else:
-        return
-    st.plotly_chart(fig, use_container_width=True)
-
-# ---------- main renderer ----------
-def render_pages(df_by_sheet: dict, mockup_text: str):
-    spec, err = try_parse_json(mockup_text)
-    if err:
-        st.error(f"Spec issue: {err}")
-        return
-
-    pages = spec.get("Pages") or []
-    if not pages:
-        st.warning("No 'Pages' in spec.")
-        return
-
-    tab_titles = [p.get("name","Page") for p in pages]
-    tabs = st.tabs(tab_titles)
-    for tab, page in zip(tabs, pages):
-        with tab:
-            # sheet selection per page
-            sheet = st.selectbox("Data sheet", list(df_by_sheet.keys()), key=f"sheet_{page.get('name','p')}")
-            df = df_by_sheet[sheet].copy()
-
-            # validate columns and offer mapping
-            missing = list_missing_fields(page, df)
-            mapping = {}
-            if missing:
-                st.warning(f"Missing fields: {', '.join(missing)}")
-                with st.expander("Map missing fields to available columns"):
-                    for m in missing:
-                        mapping[m] = st.selectbox(f"Map '{m}' to:", [""] + list(df.columns), key=f"map_{page.get('name')}_{m}")
-                if st.button("Apply Mapping", key=f"apply_{page.get('name')}"):
-                    page = apply_mapping_to_spec(page, mapping)
-                    st.experimental_rerun()
-
-            # filters (sidebar)
-            df_f = apply_slicers(df, page)
-
-            # KPIs
-            render_kpis(df_f, page)
-
-            # sections -> charts/tables
-            for sec in page.get("Layout", []):
-                if sec.get("section"):
-                    st.markdown(f"### 📂 {sec['section']}")
-                for el in sec.get("elements", []):
-                    render_chart(df_f, el)
+        render_pages(st.session_state["df_by_sheet"], st.session_state["mockup_spec"])
