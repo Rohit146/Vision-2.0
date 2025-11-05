@@ -3,6 +3,4 @@ pandas
 openpyxl
 plotly
 python-dotenv
-openai
-reportlab
-python-docx
+openai>=1.12.0
