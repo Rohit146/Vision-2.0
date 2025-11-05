@@ -1,8 +1,7 @@
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-import json
-import re
+import json, re
 
 # ---------------- JSON PARSER ----------------
 def try_parse_json(text: str):
@@ -31,9 +30,9 @@ def compute_agg(series, agg):
     if agg == "distinct": return series.nunique()
     return series.sum()
 
-# ---------------- DASHBOARD RENDERER ----------------
+# ---------------- MAIN DASHBOARD RENDERER ----------------
 def render_pages(df_by_sheet: dict, mockup_text: str):
-    """Render all pages, KPIs, and charts from the BI mockup spec."""
+    """Render dashboard (KPIs, filters, charts) from the BI mockup spec."""
     spec, err = try_parse_json(mockup_text)
     if err:
         st.error(f"Spec issue: {err}")
@@ -52,14 +51,14 @@ def render_pages(df_by_sheet: dict, mockup_text: str):
         # ------------- Filters -------------
         filters = page.get("Filters", [])
         if filters:
-            st.sidebar.markdown("### 🔍 Filters")
-        for f in filters:
-            field = f.get("field")
-            if field and field in df.columns:
-                values = sorted(df[field].dropna().unique())
-                selected = st.sidebar.multiselect(f"Filter by {field}", values, default=values[:min(5, len(values))])
-                if selected:
-                    df = df[df[field].isin(selected)]
+            with st.expander("🔎 Filters", expanded=False):
+                for f in filters:
+                    field = f.get("field")
+                    if field and field in df.columns:
+                        vals = sorted(df[field].dropna().unique())
+                        selected = st.multiselect(f"Filter by {field}", vals, default=vals[:min(5, len(vals))])
+                        if selected:
+                            df = df[df[field].isin(selected)]
 
         # ------------- KPIs -------------
         kpis = page.get("KPIs", [])
@@ -84,10 +83,8 @@ def render_pages(df_by_sheet: dict, mockup_text: str):
             for el in sec.get("elements", []):
                 typ = (el.get("type") or "").lower()
                 x, y = el.get("x"), el.get("y")
-
                 if not (x and y) or x not in df.columns or y not in df.columns:
                     continue
-
                 try:
                     if typ == "bar":
                         fig = px.bar(df, x=x, y=y, title=f"{y} by {x}")
@@ -102,4 +99,4 @@ def render_pages(df_by_sheet: dict, mockup_text: str):
                         continue
                     st.plotly_chart(fig, use_container_width=True)
                 except Exception as e:
-                    st.warning(f"Could not render {typ} chart ({e})")
+                    st.warning(f"⚠️ Could not render {typ} chart ({e})")
