@@ -1,100 +1,58 @@
-import streamlit as st
-import plotly.express as px
-import pandas as pd
-import json, re
+import streamlit as st, plotly.express as px, json, re, pandas as pd
 
-# ---- JSON Parser ----
-def try_parse_json(text: str):
-    if not text:
-        return None, "Empty spec"
-    text = re.sub(r"```(json)?", "", text)
-    text = re.sub(r"```", "", text)
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        return None, "No JSON found"
-    cleaned = re.sub(r",(\s*[}\]])", r"\1", match.group(0))
-    try:
-        return json.loads(cleaned), None
-    except Exception as e:
-        return None, f"JSON error: {e}"
+def parse_json(text):
+    text = re.sub(r"```(json)?|```","",text)
+    m = re.search(r"\{[\s\S]*\}", text)
+    if not m: return {}
+    try: return json.loads(re.sub(r",(\s*[}\]])",r"\1",m.group(0)))
+    except: return {}
 
-# ---- Helper ----
-def compute_agg(series, agg):
-    agg = (agg or "sum").lower()
-    if agg == "sum": return series.sum()
-    if agg == "avg": return series.mean()
-    if agg == "min": return series.min()
-    if agg == "max": return series.max()
-    if agg == "count": return series.count()
-    if agg == "distinct": return series.nunique()
-    return series.sum()
+def agg(series, op):
+    op=(op or "sum").lower()
+    return getattr(series, {"avg":"mean","sum":"sum",
+                            "min":"min","max":"max",
+                            "count":"count"}.get(op,"sum"))()
 
-# ---- Renderer ----
-def render_story_dashboard(df_by_sheet: dict, mockup_text: str):
-    spec, err = try_parse_json(mockup_text)
-    if err:
-        st.error(f"Spec issue: {err}")
-        return
+def render_story_dashboard(df_dict, spec_txt):
+    spec = parse_json(spec_txt)
+    for page in spec.get("Pages",[]):
+        st.markdown(f"## 🏢 {page.get('name','Dashboard')}")
+        sheet = st.selectbox("📊 Sheet", list(df_dict.keys()), key=f"s_{page.get('name','d')}")
+        df = df_dict[sheet]
 
-    pages = spec.get("Pages", [])
-    if not pages:
-        st.warning("No 'Pages' in spec.")
-        return
-
-    for page in pages:
-        st.markdown(f"## 🏢 {page.get('name', 'Dashboard')}")
-        sheet = st.selectbox("📊 Select Data Sheet", list(df_by_sheet.keys()), key=f"sheet_{page.get('name','default')}")
-        df = df_by_sheet[sheet]
-
-        # ---- Story ----
-        story = page.get("Story", [])
-        for s in story:
-            st.markdown(f"### 🧭 {s.get('section','')}")
+        # ---------- Story text ----------
+        for s in page.get("Story",[]):
+            st.markdown(f"### 🧭 {s['section']}")
             st.caption(s.get("text",""))
 
-        # ---- KPIs ----
-        kpis = page.get("KPIs", [])
+        # ---------- KPI row ----------
+        kpis = page.get("KPIs",[])
         if kpis:
-            st.markdown("### 📈 Key Metrics")
-            cols = st.columns(min(len(kpis),4))
+            cols = st.columns(min(4,len(kpis)))
             for i,k in enumerate(kpis):
-                f = k.get("field")
-                title = k.get("title", f)
-                agg = k.get("agg","sum")
+                f=k.get("field"); 
                 if f in df.columns and pd.api.types.is_numeric_dtype(df[f]):
-                    val = compute_agg(df[f], agg)
-                    cols[i%4].metric(title, f"{val:,.2f}")
+                    v=agg(df[f],k.get("agg"))
+                    cols[i%4].metric(k.get("title",f), f"{v:,.2f}")
                 else:
-                    cols[i%4].metric(title, "N/A")
+                    cols[i%4].metric(k.get("title",f),"N/A")
 
-        # ---- Charts ----
-        st.markdown("### 📊 Visuals & Trends")
-        for sec in page.get("Layout", []):
+        # ---------- Visuals (16:9) ----------
+        st.markdown("### 📊 Visuals")
+        for sec in page.get("Layout",[]):
             st.markdown(f"#### {sec.get('section','')}")
-            for el in sec.get("elements", []):
-                typ = (el.get("type") or "").lower()
-                x, y = el.get("x"), el.get("y")
-                if not x or not y or x not in df.columns or y not in df.columns:
-                    continue
+            for el in sec.get("elements",[]):
+                x,y,typ=el.get("x"),el.get("y"),(el.get("type") or "").lower()
+                if x not in df.columns or y not in df.columns: continue
                 try:
-                    fig = None
-                    if typ == "bar":
-                        fig = px.bar(df, x=x, y=y, title=f"{y} by {x}", height=480, width=854)
-                    elif typ == "line":
-                        fig = px.line(df, x=x, y=y, title=f"{y} trend over {x}", height=480, width=854)
-                    elif typ == "pie":
-                        fig = px.pie(df, names=x, values=y, title=f"{y} by {x}", height=480, width=854)
+                    fig=None
+                    if typ=="bar": fig=px.bar(df,x=x,y=y)
+                    elif typ=="line": fig=px.line(df,x=x,y=y)
+                    elif typ=="pie": fig=px.pie(df,names=x,values=y)
+                    elif typ=="table":
+                        st.dataframe(df[[x,y]].head(20)); continue
                     if fig:
-                        fig.update_layout(
-                            margin=dict(l=30, r=30, t=50, b=30),
-                            template="plotly_white"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                        fig.update_layout(height=540,width=960,margin=dict(l=20,r=20,t=40,b=40),template="plotly_white")
+                        st.plotly_chart(fig)
                 except Exception as e:
-                    st.warning(f"⚠️ Could not render {typ} chart ({e})")
-
-        # ---- Summary ----
-        if any(s.get("section","").lower()=="recommendations" for s in story):
-            st.markdown("---")
-            st.markdown("### 💡 Executive Summary")
-            st.info("This section highlights insights, risks, and recommended actions derived from trends above.")
+                    st.warning(f"{typ} failed: {e}")
