@@ -1,63 +1,57 @@
 from openai import OpenAI
 import os, re, json
 from dotenv import load_dotenv
-
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-SCHEMA_HINT = """
-Return ONLY valid JSON matching this schema:
-{
- "Pages":[
-   {"name":"string","Filters":[{"field":"string"}],
-    "KPIs":[{"title":"string","agg":"sum|avg|min|max|count|distinct","field":"string"}],
-    "Layout":[
-      {"section":"string","elements":[{"type":"Bar|Line|Pie|Table","x":"string","y":"string"}]}
-    ]
-   }
- ]
-}
-"""
-
 def extract_clean_json(text: str) -> str:
-    """Remove ```json fences, markdown, and extra notes."""
     text = re.sub(r"```(json)?", "", text)
     text = re.sub(r"```", "", text)
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        return "{}"
-    json_str = match.group(0).strip()
-    json_str = re.sub(r",(\s*[}\]])", r"\1", json_str)
-    return json_str
+    m = re.search(r"\{[\s\S]*\}", text)
+    if not m: return "{}"
+    return re.sub(r",(\s*[}\]])", r"\1", m.group(0)).strip()
 
-def generate_bi_mockup(user_goal: str, data_profile: dict, role="BI Developer") -> str:
-    """Generate clean, valid BI mockup JSON."""
-    profile_text = "\n".join(
-        [f"Sheet {s}: numeric={p['numeric']} categorical={p['categorical']}" for s,p in data_profile.items()]
+ROLE_CONTEXT = {
+    "Finance Analyst":
+        "Focus on revenue, margin, cost, and profitability trends; show risks and cashflow insights.",
+    "Sales Leader":
+        "Focus on pipeline, win-loss, top regions/products, YoY growth and customer trends.",
+    "Operations Manager":
+        "Focus on efficiency, utilization, lead time, supplier or production metrics.",
+    "BI Developer":
+        "Focus on balanced visuals and technical KPIs useful for BI deployment readiness."
+}
+
+def generate_bi_mockup(goal, data_profile, role):
+    profile = "\n".join(
+        [f"Sheet {s}: numeric={p['numeric']} categorical={p['categorical']}"
+         for s,p in data_profile.items()]
     )
     prompt = f"""
-You are a {role}.
-Generate a compact Power BI / MicroStrategy dashboard spec.
-Be precise, minimal, use only fields present in the data.
-Respond with valid JSON only.
+You are acting as a {role}. {ROLE_CONTEXT.get(role,'')}
 
-Data Summary:
-{profile_text}
+Using this data:
+{profile}
 
-User Goal:
-{user_goal}
+Business goal:
+{goal}
 
-{SCHEMA_HINT}
+Create a realistic Power BI-style dashboard spec in JSON.
+Include five story sections: Overview, Performance, Trends, Risks, Recommendations.
+Include relevant KPIs and visuals.
+
+Return **only JSON** with this structure:
+{{
+ "Pages":[{{"name":"string",
+   "Story":[{{"section":"string","text":"string"}}],
+   "KPIs":[{{"title":"string","agg":"sum|avg|min|max|count","field":"string"}}],
+   "Layout":[{{"section":"string","elements":[{{"type":"Bar|Line|Pie|Table","x":"string","y":"string"}}]}}]
+ }}]
+}}
 """
-    resp = client.chat.completions.create(
+    r = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
+        messages=[{"role":"user","content":prompt}],
+        temperature=0.3,
     )
-    raw = resp.choices[0].message.content
-    cleaned = extract_clean_json(raw)
-    try:
-        json.loads(cleaned)
-    except Exception:
-        cleaned = "{}"
-    return cleaned
+    return extract_clean_json(r.choices[0].message.content)
