@@ -5,7 +5,6 @@ import json, re
 
 # ---------------- JSON PARSER ----------------
 def try_parse_json(text: str):
-    """Tolerant JSON extractor & validator."""
     if not text:
         return None, "Empty spec"
     text = re.sub(r"```(json)?", "", text)
@@ -30,9 +29,8 @@ def compute_agg(series, agg):
     if agg == "distinct": return series.nunique()
     return series.sum()
 
-# ---------------- MAIN DASHBOARD RENDERER ----------------
-def render_pages(df_by_sheet: dict, mockup_text: str):
-    """Render dashboard (KPIs, filters, charts) from the BI mockup spec."""
+# ---------------- MAIN STORY RENDERER ----------------
+def render_story_dashboard(df_by_sheet: dict, mockup_text: str):
     spec, err = try_parse_json(mockup_text)
     if err:
         st.error(f"Spec issue: {err}")
@@ -44,42 +42,38 @@ def render_pages(df_by_sheet: dict, mockup_text: str):
         return
 
     for page in pages:
-        st.subheader(f"📄 {page.get('name', 'Dashboard')}")
-        sheet = st.selectbox("Data Sheet", list(df_by_sheet.keys()), key=f"sheet_{page.get('name', 'default')}")
+        st.markdown(f"## 🏢 {page.get('name', 'Dashboard')}")
+        sheet = st.selectbox("📊 Select Data Sheet", list(df_by_sheet.keys()), key=f"sheet_{page.get('name', 'default')}")
         df = df_by_sheet[sheet]
 
-        # ------------- Filters -------------
-        filters = page.get("Filters", [])
-        if filters:
-            with st.expander("🔎 Filters", expanded=False):
-                for f in filters:
-                    field = f.get("field")
-                    if field and field in df.columns:
-                        vals = sorted(df[field].dropna().unique())
-                        selected = st.multiselect(f"Filter by {field}", vals, default=vals[:min(5, len(vals))])
-                        if selected:
-                            df = df[df[field].isin(selected)]
+        # ---- STORY SECTIONS ----
+        story = page.get("Story", [])
+        if story:
+            for s in story:
+                st.markdown(f"### 🧭 {s.get('section')}")
+                st.caption(s.get("text", ""))
 
-        # ------------- KPIs -------------
+        # ---- KPI Section ----
         kpis = page.get("KPIs", [])
         if kpis:
-            st.markdown("### 📈 KPIs")
+            st.markdown("### 📈 Key Metrics")
             cols = st.columns(min(len(kpis), 4))
             for i, k in enumerate(kpis):
-                f = k.get("field")
-                title = k.get("title", f)
+                field = k.get("field")
+                title = k.get("title", field)
                 agg = k.get("agg", "sum")
-                if f in df.columns and pd.api.types.is_numeric_dtype(df[f]):
-                    val = compute_agg(df[f], agg)
+                if field in df.columns and pd.api.types.is_numeric_dtype(df[field]):
+                    val = compute_agg(df[field], agg)
                     cols[i % 4].metric(title, f"{val:,.2f}")
                 else:
                     cols[i % 4].metric(title, "N/A")
 
-        # ------------- Charts -------------
+        # ---- Visual Layout ----
         layouts = page.get("Layout", [])
+        st.markdown("### 📊 Visuals & Trends")
         for sec in layouts:
             section_title = sec.get("section", "Visuals")
-            st.markdown(f"#### 📊 {section_title}")
+            st.markdown(f"#### {section_title}")
             for el in sec.get("elements", []):
                 typ = (el.get("type") or "").lower()
                 x, y = el.get("x"), el.get("y")
@@ -87,16 +81,20 @@ def render_pages(df_by_sheet: dict, mockup_text: str):
                     continue
                 try:
                     if typ == "bar":
-                        fig = px.bar(df, x=x, y=y, title=f"{y} by {x}")
+                        fig = px.bar(df, x=x, y=y, title=f"{y} by {x}", height=500, width=900)
                     elif typ == "line":
-                        fig = px.line(df, x=x, y=y, title=f"{y} trend by {x}")
+                        fig = px.line(df, x=x, y=y, title=f"{y} trend over {x}", height=500, width=900)
                     elif typ == "pie":
-                        fig = px.pie(df, names=x, values=y, title=f"{y} by {x}")
-                    elif typ == "table":
-                        st.dataframe(df[[x, y]].head(50), use_container_width=True)
-                        continue
+                        fig = px.pie(df, names=x, values=y, title=f"{y} distribution by {x}", height=500, width=900)
                     else:
                         continue
+                    fig.update_layout(margin=dict(l=30, r=30, t=50, b=30))
                     st.plotly_chart(fig, use_container_width=True)
                 except Exception as e:
                     st.warning(f"⚠️ Could not render {typ} chart ({e})")
+
+        # ---- Recommendations / Insights ----
+        if any(s.get("section", "").lower() == "recommendations" for s in story):
+            st.markdown("---")
+            st.markdown("### 💡 Executive Summary & Next Steps")
+            st.info("This section summarizes insights and suggests strategic actions based on the trends observed.")
